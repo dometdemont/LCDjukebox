@@ -1,5 +1,6 @@
 /*
   Select a MIDI file on an SD card and play it
+  An LCD and 3 buttons enable the navigation and play selection
 */
 
 #include <SdFat.h>
@@ -14,6 +15,7 @@ MD_MIDIFile SMF;
 
 enum buttonState {ON, OFF, UNCHANGED, HOLD};
 const int HOLDTIME=2000;
+const int PUSHTIME=200;
 
 class button {
   public: 
@@ -35,11 +37,11 @@ buttonState button::getState(){
   buttonState result=UNCHANGED;
   int current=digitalRead(pin);
   if(current != state){
-    if(state && millis()-timestamp<=HOLDTIME)result=ON;
+    if(state && (millis()-timestamp>PUSHTIME) && (millis()-timestamp<=HOLDTIME))result=ON;
     state=current;
     timestamp=millis();
   }else{
-    if(state && millis()-timestamp>HOLDTIME)result=HOLD;
+    if(state && (millis()-timestamp>HOLDTIME))result=HOLD;
   }
   return result;
 }
@@ -59,13 +61,18 @@ void midiSilence(void)
   // All sound off
   // When All Sound Off is received all oscillators will turn off, and their volume
   // envelopes are set to zero as soon as possible.
+  const char msg[]={120, 121, 123};
+  
   ev.size = 0;
   ev.data[ev.size++] = 0xb0;
-  ev.data[ev.size++] = 120;
+  ev.data[ev.size++] = 0;
   ev.data[ev.size++] = 0;
 
-  for (ev.channel = 0; ev.channel < 16; ev.channel++)
+  for(int i=sizeof(msg)/sizeof(msg[0]); i--; ){
+    ev.data[1]=msg[i];
+    for (ev.channel = 0; ev.channel < 16; ev.channel++)
     midiCallback(&ev);
+  }
 }
 
 class play {
@@ -116,16 +123,17 @@ void welcome(){
 }
 
 
-play elise("ELISE.MID",     "Lettre a` Elise ",  "Ludwig Beethoven");
-play menuet("MINUET.MID",   "Menuet          ",  "W Amadeus Mozart");
-play nacht("MOZART.MID",    "Symphonie 40    ",  "W Amadeus Mozart");
-play fugue("FUGUEGM.MID",   "Fugue en Sol M. ",  "Johann Seb. Bach");
-play fernand("FERNANDO.MID","Fernande        ",  "Anonyme         ");
-play taille("COUPERIN.MID", "Tierce en taille",  "Fr. Couperin    ");
-play paix("LANGLAIS.MID",   "Chant de paix   ",  "Jean Langlais   ");
-//play franck("FRANCK.MID",   "3eme Choral     ",   "Cesar Franck   ");
-
-play *playList[] = {&elise, &nacht, &taille, &paix, &menuet, &fugue, &fernand};
+play liszt("LISZT.MID",       "P&F sur B.A.C.H.",  "Franz Liszt     ");
+play messiaen("MESSIAEN.MID", "Banquet ce'leste",  "Olivier Messiaen");
+play buxtehude("BUXTEHUD.MID","Passacaille     ",  "Dietr. Buxtehude");
+play wagner("WAGNER.MID",     "Mort d'Isolde   ",  "Richard Wagner  ");
+play dupre("DUPRE.MID",       "P&F en sol min  ",  "Marcel Dupre'   ");
+play taille("COUPERIN.MID",   "Tierce en taille",  "Fr. Couperin    ");
+play paix("LANGLAIS.MID",     "Chant de paix   ",  "Jean Langlais   ");
+play franck("FRANCK.MID",     "3eme Choral     ",  "Cesar Franck    ");
+play boelmann("BOELMANN.MID", "Toccata         ",  "Le'on Boelmann  ");
+play chromorn("CHROMORN.MID", "Chromorne taille",  "Fr. Couperin    ");
+play *playList[] = {&liszt, &franck, &taille, &wagner, &buxtehude, &chromorn};
 const int iMaxPlay=sizeof(playList)/sizeof(playList[0]);
 
 // change this to match your SD shield or module;
@@ -152,15 +160,10 @@ void midiCallback(midi_event *pev)
 void sysexCallback(sysex_event *pev)
 // Called by the MIDIFile library when a system Exclusive (sysex) file event needs 
 // to be processed through the midi communications interface. Most sysex events cannot 
-// really be processed, so we just ignore it here.
+// really be processed, so we just pass it through
 // This callback is set up in the setup() function.
 {
-  char msg[20];
-  sprintf(msg, "SysEx on %d: %d", pev->track, pev->size);
-  lcd.setCursor(0, 0); lcd.print(msg);
-  for (uint8_t i=0; i<pev->size; i++)
-  {
-  }
+  Serial.write(pev->data, pev->size);
 }
 
 void setup() {
@@ -184,8 +187,6 @@ void setup() {
   iPlay=0;
   playing=false;
 }
-
-
 
 void loop() {
   switch(left.getState())   {case ON: iPlay=(iPlay+iMaxPlay-1)%iMaxPlay; playList[iPlay]->show(); break;}
