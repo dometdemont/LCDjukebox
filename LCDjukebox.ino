@@ -13,35 +13,43 @@ SdFat  SD;
 MD_MIDIFile SMF;
 #define SERIAL_RATE 31250
 
-enum buttonState {ON, OFF, UNCHANGED, HOLD};
-const int HOLDTIME=2000;
-const int PUSHTIME=200;
-
 class button {
   public: 
     button(int pin);
+    enum buttonState {ON, OFF, UNCHANGED, HOLD};
     buttonState getState();
   private:
+    const int HOLDTIME=2000;  // a min long press duration
+    const int PUSHTIME=200;   // a min normal press duration
     int pin;
-    int state;    
-    uint32_t timestamp;
+    buttonState state;
+    buttonState returnOff;    // the buttonState to return when the button will be depressed: ON for a normal press, OFF for a long one
+    uint32_t timestamp;       // date of the last reported state
 };
 
 button::button(int aPin){
   pin=aPin;
   pinMode(pin, INPUT);
-  state=digitalRead(pin);
+  state=digitalRead(pin)?ON:OFF;
   timestamp=millis();
+  returnOff=ON;
 }
-buttonState button::getState(){
+button::buttonState button::getState(){
   buttonState result=UNCHANGED;
-  int current=digitalRead(pin);
+  buttonState current=digitalRead(pin)?ON:OFF;
   if(current != state){
-    if(state && (millis()-timestamp>PUSHTIME) && (millis()-timestamp<=HOLDTIME))result=ON;
+    if(state == ON && (millis()-timestamp>PUSHTIME) && (millis()-timestamp<=HOLDTIME)){
+      result=returnOff;
+      returnOff=ON;
+    }
     state=current;
     timestamp=millis();
   }else{
-    if(state && (millis()-timestamp>HOLDTIME))result=HOLD;
+    if(state == ON && (millis()-timestamp>HOLDTIME)){
+      result=HOLD;
+      returnOff=OFF;
+      timestamp=millis(); // Reset the last event timestamp to report only changes
+    }
   }
   return result;
 }
@@ -61,7 +69,11 @@ void midiSilence(void)
   // All sound off
   // When All Sound Off is received all oscillators will turn off, and their volume
   // envelopes are set to zero as soon as possible.
-  const char msg[]={120, 121, 123};
+  const char msg[]={
+    120,  // All sounds off
+    121,  // Reset all controllers
+    123   // All notes off
+  };
   
   ev.size = 0;
   ev.data[ev.size++] = 0xb0;
@@ -87,8 +99,10 @@ class play {
     const char* author;
 };
 
+// Current display when browsing the catalog
 int iPlay;
-bool playing;
+// Actual play
+play* playing;
 
 play::play(const char* aFile, const char* aTitle, const char* anAuthor){
   file = aFile;
@@ -96,6 +110,11 @@ play::play(const char* aFile, const char* aTitle, const char* anAuthor){
   author = anAuthor;
 }
 void play::start(){
+  if(playing != NULL){
+    lcd.setCursor(0, 0); lcd.print(F("Hold to stop   :"));
+    lcd.setCursor(0, 1); lcd.print(playing->title); 
+    return;    
+  }
   int err = SMF.load(this->file);
   if (err != MD_MIDIFile::E_OK){
     lcd.setCursor(0, 0); lcd.print(F("SD load error:  "));
@@ -103,11 +122,11 @@ void play::start(){
   }else{
     lcd.setCursor(0, 0); lcd.print(F("Now playing:    "));
     lcd.setCursor(0, 1); lcd.print(this->title);
-    playing=true;
+    playing=this;
   }
 }
 void play::cancel(){
-  if(!playing)return;
+  if(playing == NULL)return;
   lcd.setCursor(0, 0); lcd.print(F("Now stopping:   "));
   lcd.setCursor(0, 1); lcd.print(this->title);
   SMF.close();
@@ -116,12 +135,6 @@ void play::show(){
   lcd.setCursor(0, 0); lcd.print(this->title);
   lcd.setCursor(0, 1); lcd.print(this->author);
 }
-
-void welcome(){
-  lcd.setCursor(0, 0); lcd.print(F("  Select & Play "));
-  lcd.setCursor(0, 1); lcd.print(F("<<=    |>    =>>"));
-}
-
 
 play liszt("LISZT.MID",       "P&F sur B.A.C.H.",  "Franz Liszt     ");
 play messiaen("MESSIAEN.MID", "Banquet ce'leste",  "Olivier Messiaen");
@@ -166,6 +179,59 @@ void sysexCallback(sysex_event *pev)
   Serial.write(pev->data, pev->size);
 }
 
+class swellBox {
+  public:
+    swellBox(int channel);
+    void open();
+    void close();
+    void reverse();
+    bool isOpened();
+  private:
+    int midiChannel;
+    bool opened;
+};
+swellBox::swellBox(int channel){
+  midiChannel=channel;
+  open();  
+};
+bool swellBox::isOpened(){return opened;}
+void swellBox::open(){
+  midi_event ev;
+  ev.size = 0;
+  ev.channel = midiChannel;
+  ev.data[ev.size++] = 0xb0;
+  ev.data[ev.size++] = 0x0b;
+  ev.data[ev.size++] = 100;
+  midiCallback(&ev);  
+  opened=true;
+};
+void swellBox::close(){
+  midi_event ev;
+  ev.size = 0;
+  ev.channel = midiChannel;
+  ev.data[ev.size++] = 0xb0;
+  ev.data[ev.size++] = 0x0b;
+  ev.data[ev.size++] = 0;
+  midiCallback(&ev);  
+  opened=false;
+};
+swellBox recit(2);
+swellBox positif(3);
+
+
+void welcome(){
+  lcd.setCursor(0, 0); lcd.print(F("<<=    |>    =>>"));
+  lcd.setCursor(0, 1); lcd.print(F("_POSf_ XX _RECt_"));
+  if(positif.isOpened()){lcd.setCursor(0, 1);lcd.print(F("^POSf^"));}
+  if(recit.isOpened()){lcd.setCursor(10, 1);lcd.print(F("^RECt^"));}
+}
+
+void swellBox::reverse(){
+  if(opened)close();
+  else open();
+  welcome();
+};
+
 void setup() {
   Serial.begin(SERIAL_RATE);
 
@@ -177,6 +243,9 @@ void setup() {
     lcd.print(F("SD init failed  "));
     delay(5000);
   };
+
+  recit.open(); positif.open();
+  
   welcome();
   
   // Initialize MIDIFile
@@ -185,20 +254,30 @@ void setup() {
   SMF.setSysexHandler(sysexCallback);
   
   iPlay=0;
-  playing=false;
+  playing=NULL;
 }
 
 void loop() {
-  switch(left.getState())   {case ON: iPlay=(iPlay+iMaxPlay-1)%iMaxPlay; playList[iPlay]->show(); break;}
-  switch(middle.getState()) {case ON: playList[iPlay]->start(); break; case HOLD: playList[iPlay]->cancel(); break;}
-  switch(right.getState())  {case ON: iPlay=(iPlay+1)%iMaxPlay; playList[iPlay]->show(); break;}
+  switch(left.getState())   {
+    case button::buttonState::ON: iPlay=(iPlay+iMaxPlay-1)%iMaxPlay; playList[iPlay]->show(); break; 
+    case button::buttonState::HOLD:positif.reverse();
+    }
+  switch(middle.getState()) {
+    case button::buttonState::ON: playList[iPlay]->start(); break; 
+    case button::buttonState::HOLD: playList[iPlay]->cancel(); break;
+    }
+  switch(right.getState())  {
+    case button::buttonState::ON: iPlay=(iPlay+1)%iMaxPlay; playList[iPlay]->show(); break; 
+    case button::buttonState::HOLD:recit.reverse();
+    }
 
-  if(playing){
+  if(playing != NULL){
     if (SMF.isEOF()){
       SMF.close();
       midiSilence();
+      positif.open(); recit.open();
       welcome();
-      playing=false;
+      playing=NULL;
     }else{
       SMF.getNextEvent();
     }
